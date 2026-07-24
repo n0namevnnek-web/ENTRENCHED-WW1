@@ -1,0 +1,739 @@
+--[[
+    ================================================================
+    [ SCRIPT INFORMATION ]
+    Project: Custom Script
+    Author: OYB
+    YouTube: https://www.youtube.com/channel/UCAlXXV1Hbvf7WbfXARuVtiQ
+    
+    [ TERMS AND CONDITIONS ]
+    - You ARE allowed to use and modify this script for your own games.
+    - You ARE NOT allowed to re-upload, redistribute, or claim 
+      ownership of this script.
+    - Removing or altering these credits is strictly prohibited.
+    
+    Copyright (c) 2026 OYB. All rights reserved.
+    ================================================================
+]]
+
+-- ⚠️ IMPORTANT: Put this code at the VERY TOP of your Main Script (before obfuscating) ⚠️
+
+local ProtectionConfig = {
+    -- 🔴 CRITICAL: This MUST exactly match the 'Secret' value in your Key System's Config!
+    -- If your Key System has: Secret = "Test"
+    -- Then this must also be: SecretKey = "Test"
+    SecretKey = "2107",
+    
+    -- The name of your Hub (shown in the kick message if they try to bypass)
+    HubName = "NNVN Hub"
+}
+
+-- Anti-Bypass Logic: Checks if the Key System successfully set the global variable
+if not _G[ProtectionConfig.SecretKey] then
+    local player = game:GetService("Players").LocalPlayer
+    if player then
+        player:Kick("\n🛡️ Unauthorized Execution 🛡️\n\nPlease use the official Key System to run " .. ProtectionConfig.HubName)
+    end
+    return -- Stops the rest of the script from loading!
+end
+
+-------------------------------------------------------------------------------
+-- 👇 YOUR MAIN SCRIPT CODE STARTS HERE 👇
+-------------------------------------------------------------------------------
+local RunService = game:GetService("RunService")
+--[[
+    NNVN Hub - FPS Abilities Test Environment
+    Powered by WindUI
+    
+    Features:
+    - ESP (Wallhack with Visibility & Team Checks)
+    - Aimbot (Optimized Wall Checks, Aim Strength Control, Projectile Prediction)
+    - FOV Circle (Visualized Screen Circle aligned to Absolute Viewport)
+]]
+
+local cloneref = (cloneref or clonereference or function(instance)
+    return instance
+end)
+local ReplicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
+
+local WindUI
+
+do
+    local ok, result = pcall(function()
+        return require("./src/Init")
+    end)
+
+    if ok then
+        WindUI = result
+    else
+        if cloneref(game:GetService("RunService")):IsStudio() then
+            WindUI = require(cloneref(ReplicatedStorage:WaitForChild("WindUI"):WaitForChild("Init")))
+        else
+            WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+        end
+    end
+end
+
+-- // Services
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+-- // Variables
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+local Connections = {}
+
+-- Optimize Raycasting to prevent memory leaks/freezes
+local SharedRaycast = RaycastParams.new()
+SharedRaycast.FilterType = Enum.RaycastFilterType.Exclude
+SharedRaycast.IgnoreWater = true
+
+-- // Main Window
+local Window = WindUI:CreateWindow({
+    Title = "NNVN Hub",
+    Author = "By N0NAMEVN",
+    Folder = "nnvnhub",
+    Icon = "",
+    NewElements = true,
+    HideSearchBar = false,
+    OpenButton = {
+        Title = "Open NNVN Hub",
+        CornerRadius = UDim.new(1, 0),
+        StrokeThickness = 3,
+        Enabled = true,
+        Draggable = true,
+        OnlyMobile = false,
+        Scale = 0.5,
+        Color = ColorSequence.new(
+            Color3.fromHex("#00D4FF"),
+            Color3.fromHex("#7B2FBE")
+        ),
+    },
+    Topbar = {
+        Height = 44,
+        ButtonsType = "Mac",
+    },
+})
+
+-- // Tabs
+local AbilitiesTab = Window:Tab({
+    Title = "Main",
+})
+
+local InformationTab = Window:Tab({
+    Title = "Information",
+})
+
+local DiscordTab = Window:Tab({
+    Title = "Discord",
+})
+
+local SettingsTab = Window:Tab({
+    Title = "Settings",
+})
+
+-- // Sections
+local ESPSection = AbilitiesTab:Section({
+    Title = "ESP",
+})
+
+local AimbotSection = AbilitiesTab:Section({
+    Title = "Aimbot",
+})
+
+-- ==========================================
+-- ||              UTILITIES               ||
+-- ==========================================
+
+local function ParseInputBind(text, default)
+    text = tostring(text):upper()
+    local successKey, resultKey = pcall(function() return Enum.KeyCode[text] end)
+    if successKey and resultKey then return resultKey end
+    
+    local successMouse, resultMouse = pcall(function() return Enum.UserInputType[text] end)
+    if successMouse and resultMouse then return resultMouse end
+
+    return default
+end
+
+local function IsEnemy(targetPlayer)
+    if not targetPlayer then return false end
+    if LocalPlayer.Team == nil then return true end
+    return targetPlayer.Team ~= LocalPlayer.Team
+end
+
+local function IsVisible(targetPart)
+    if not targetPart then return false end
+    
+    local origin = Camera.CFrame.Position
+    local direction = targetPart.Position - origin
+    
+    SharedRaycast.FilterDescendantsInstances = {LocalPlayer.Character, Camera}
+    
+    local result = workspace:Raycast(origin, direction, SharedRaycast)
+    
+    if result then
+        if result.Instance:IsDescendantOf(targetPart.Parent) then
+            return true
+        end
+        return false
+    end
+    return true
+end
+
+-- ==========================================
+-- ||               ESP                     ||
+-- ==========================================
+local espEnabled = false
+local espKeybind = Enum.KeyCode.E
+local espHighlights = {}
+local espFolder = Instance.new("Folder")
+espFolder.Name = "ESPFolder"
+espFolder.Parent = CoreGui
+
+local espToggle
+
+local function ClearESP()
+    for player, highlight in pairs(espHighlights) do
+        if highlight and highlight.Parent then
+            highlight:Destroy()
+        end
+    end
+    table.clear(espHighlights)
+end
+
+local function UpdateESP()
+    if not espEnabled then return end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer or not IsEnemy(player) then 
+            if espHighlights[player] then
+                espHighlights[player]:Destroy()
+                espHighlights[player] = nil
+            end
+            continue 
+        end
+        
+        local character = player.Character
+        local rootPart = character and (character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso"))
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        
+        if character and rootPart and humanoid and humanoid.Health > 0 then
+            local highlight = espHighlights[player]
+            
+            if not highlight or not highlight.Parent then
+                highlight = Instance.new("Highlight")
+                highlight.Name = player.Name .. "_ESP"
+                highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                highlight.FillTransparency = 0.6
+                highlight.OutlineTransparency = 0.1
+                highlight.Parent = espFolder
+                espHighlights[player] = highlight
+            end
+            
+            highlight.Adornee = character
+            
+            if IsVisible(rootPart) then
+                highlight.FillColor = Color3.fromRGB(87, 215, 126)
+                highlight.OutlineColor = Color3.fromRGB(0, 255, 0)
+            else
+                highlight.FillColor = Color3.fromRGB(242, 76, 76)
+                highlight.OutlineColor = Color3.fromRGB(255, 0, 0)
+            end
+        else
+            if espHighlights[player] then
+                espHighlights[player]:Destroy()
+                espHighlights[player] = nil
+            end
+        end
+    end
+end
+
+espToggle = ESPSection:Toggle({
+    Title = "Enable ESP",
+    Value = false,
+    Callback = function(value)
+        espEnabled = value
+        if not value then ClearESP() end
+    end,
+})
+
+ESPSection:Input({
+    Title = "Toggle Keybind",
+    Placeholder = "E",
+    Value = "E",
+    Callback = function(text)
+        espKeybind = ParseInputBind(text, Enum.KeyCode.E)
+    end,
+})
+
+-- ==========================================
+-- ||             AIMBOT                    ||
+-- ==========================================
+local aimKeybind = Enum.UserInputType.MouseButton2
+local aimPart = "Head"
+local aimMode = "Camera"
+local aimStrength = 30 
+local aimFOV = 150
+local aimWallCheck = true
+local aimShowFOV = true
+
+-- Prediction Settings
+local aimPrediction = false
+local aimProjSpeed = 1000
+
+-- FOV Circle GUI
+local fovGui = Instance.new("ScreenGui")
+fovGui.Name = "AimbotFOV"
+fovGui.ResetOnSpawn = false
+fovGui.IgnoreGuiInset = true 
+fovGui.Parent = CoreGui
+
+local fovCircle = Instance.new("Frame")
+fovCircle.Name = "FOVCircle"
+fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+fovCircle.Position = UDim2.fromScale(0.5, 0.5)
+fovCircle.BackgroundTransparency = 1
+fovCircle.Visible = aimShowFOV
+fovCircle.Parent = fovGui
+
+local fovCorner = Instance.new("UICorner")
+fovCorner.CornerRadius = UDim.new(1, 0)
+fovCorner.Parent = fovCircle
+
+local fovStroke = Instance.new("UIStroke")
+fovStroke.Color = Color3.fromRGB(0, 212, 255)
+fovStroke.Thickness = 1.5
+fovStroke.Parent = fovCircle
+
+local function UpdateFOVVisual()
+    local diameter = aimFOV * 2
+    fovCircle.Size = UDim2.fromOffset(diameter, diameter)
+    fovCircle.Visible = aimShowFOV
+    fovStroke.Color = Color3.fromRGB(0, 212, 255)
+end
+UpdateFOVVisual()
+
+local function GetTargetPart(plr)
+    if not plr.Character then return nil end
+    if aimPart == "Head" then
+        return plr.Character:FindFirstChild("Head")
+    else
+        return plr.Character:FindFirstChild("HumanoidRootPart")
+    end
+end
+
+-- Prediction Math
+local function GetPredictedPosition(targetPart)
+    if not aimPrediction then 
+        return targetPart.Position 
+    end
+    
+    local speed = math.max(aimProjSpeed, 1)
+    local distance = (targetPart.Position - Camera.CFrame.Position).Magnitude
+    local timeToImpact = distance / speed
+    local predictedOffset = targetPart.AssemblyLinearVelocity * timeToImpact
+    
+    return targetPart.Position + predictedOffset
+end
+
+local function GetClosestEnemy()
+    local mousePos = UserInputService:GetMouseLocation()
+    local closestTarget = nil
+    local closestPredictedPos = nil
+    local closestDist = aimFOV
+
+    for _, plr in pairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and IsEnemy(plr) and plr.Character then
+            local humanoid = plr.Character:FindFirstChildOfClass("Humanoid")
+            if humanoid and humanoid.Health > 0 then
+                local targetPart = GetTargetPart(plr)
+                if targetPart then
+                    local predictedPos = GetPredictedPosition(targetPart)
+                    
+                    local screenPos, onScreen = Camera:WorldToViewportPoint(predictedPos)
+                    if onScreen then
+                        local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+                        if dist < closestDist then
+                            if aimWallCheck and not IsVisible(targetPart) then continue end
+                            
+                            closestDist = dist
+                            closestTarget = targetPart
+                            closestPredictedPos = predictedPos
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return closestTarget, closestPredictedPos
+end
+
+local function AimCamera(targetPos)
+    local currentCF = Camera.CFrame
+    local targetCF = CFrame.lookAt(currentCF.Position, targetPos)
+    local alpha = math.clamp(aimStrength / 100, 0.01, 1)
+    
+    if alpha < 1 then
+        Camera.CFrame = currentCF:Lerp(targetCF, alpha)
+    else
+        Camera.CFrame = targetCF 
+    end
+end
+
+local function AimMouse(targetPos)
+    local screenPos, onScreen = Camera:WorldToViewportPoint(targetPos)
+    
+    if onScreen then
+        local mouseLoc = UserInputService:GetMouseLocation()
+        local alpha = math.clamp(aimStrength / 100, 0.01, 1)
+        
+        local deltaX = (screenPos.X - mouseLoc.X) * alpha
+        local deltaY = (screenPos.Y - mouseLoc.Y) * alpha
+        
+        if mousemoverel then 
+            pcall(function() mousemoverel(deltaX, deltaY) end) 
+        else
+            pcall(function() VirtualInputManager:SendMouseMovement(deltaX, deltaY, nil) end)
+        end
+    end
+end
+
+AimbotSection:Input({
+    Title = "Hold Keybind",
+    Placeholder = "MouseButton2",
+    Value = "MouseButton2",
+    Callback = function(text)
+        aimKeybind = ParseInputBind(text, Enum.UserInputType.MouseButton2)
+    end,
+})
+
+AimbotSection:Dropdown({
+    Title = "Aim Mode",
+    Values = { "Camera", "Mouse" },
+    Value = "Camera",
+    Callback = function(value)
+        aimMode = value
+    end,
+})
+
+AimbotSection:Dropdown({
+    Title = "Target Part",
+    Values = { "Head", "HumanoidRootPart" },
+    Value = "Head",
+    Callback = function(value)
+        aimPart = value
+    end,
+})
+
+AimbotSection:Slider({
+    Title = "Aim Strength (%)",
+    Step = 1,
+    Value = {
+        Min = 1,
+        Max = 100,
+        Default = aimStrength,
+    },
+    Callback = function(value)
+        aimStrength = value
+    end,
+})
+
+AimbotSection:Slider({
+    Title = "Field of View (FOV)",
+    Step = 1,
+    Value = {
+        Min = 0,
+        Max = 500,
+        Default = aimFOV,
+    },
+    Callback = function(value)
+        aimFOV = value
+        UpdateFOVVisual()
+    end,
+})
+
+AimbotSection:Toggle({
+    Title = "Enable Prediction",
+    Value = aimPrediction,
+    Callback = function(value)
+        aimPrediction = value
+    end,
+})
+
+AimbotSection:Slider({
+    Title = "Projectile Speed",
+    Step = 50,
+    Value = {
+        Min = 100,
+        Max = 5000,
+        Default = aimProjSpeed,
+    },
+    Callback = function(value)
+        aimProjSpeed = value
+    end,
+})
+
+AimbotSection:Toggle({
+    Title = "Show FOV Circle",
+    Value = aimShowFOV,
+    Callback = function(value)
+        aimShowFOV = value
+        UpdateFOVVisual()
+    end,
+})
+
+AimbotSection:Toggle({
+    Title = "Wall Check",
+    Value = aimWallCheck,
+    Callback = function(value)
+        aimWallCheck = value
+    end,
+})
+
+-- ==========================================
+-- ||           INFORMATION TAB            ||
+-- ==========================================
+do
+    InformationTab:Section({
+        Title = "About NNVN Hub",
+        TextSize = 24,
+        FontWeight = Enum.FontWeight.SemiBold,
+    })
+
+    InformationTab:Space()
+
+    InformationTab:Section({
+        Title = "NNVN Hub is a powerful FPS abilities tool designed for competitive gameplay.\n\nFeatures:\n- ESP - Wallhack with visibility detection\n- Aimbot - Advanced aim assist with prediction\n- FOV Circle - Visual aiming circle\n\nDeveloped by N0NAMEVN",
+        TextSize = 18,
+        TextTransparency = 0.35,
+        FontWeight = Enum.FontWeight.Medium,
+    })
+
+    InformationTab:Space({ Columns = 4 })
+
+    InformationTab:Button({
+        Title = "Copy Discord Invite",
+        Color = Color3.fromHex("#5865F2"),
+        Justify = "Center",
+        Icon = "",
+        Callback = function()
+            if setclipboard then
+                setclipboard("https://discord.gg/n4DbXTyNPj")
+                WindUI:Notify({
+                    Title = "Discord Invite",
+                    Content = "Copied to Clipboard!",
+                })
+            end
+        end,
+    })
+end
+
+-- ==========================================
+-- ||            DISCORD TAB               ||
+-- ==========================================
+do
+    local InviteCode = "n4DbXTyNPj"
+    local DiscordAPI = "https://discord.com/api/v10/invites/" .. InviteCode .. "?with_counts=true&with_expiration=true"
+
+    local Response = WindUI.cloneref(game:GetService("HttpService"))
+        :JSONDecode(WindUI.Creator.Request and WindUI.Creator.Request({
+            Url = DiscordAPI,
+            Method = "GET",
+            Headers = {
+                ["User-Agent"] = "WindUI/NNVNHub",
+                ["Accept"] = "application/json",
+            },
+        }).Body or "{}")
+
+    DiscordTab:Section({
+        Title = "Join our Discord Server!",
+        TextSize = 20,
+    })
+
+    if Response and Response.guild then
+        DiscordTab:Paragraph({
+            Title = tostring(Response.guild.name),
+            Desc = tostring(Response.guild.description or "Community for NNVN Hub users."),
+            Image = "https://cdn.discordapp.com/icons/"
+                .. Response.guild.id
+                .. "/"
+                .. Response.guild.icon
+                .. ".png?size=1024",
+            Thumbnail = "https://cdn.discordapp.com/banners/1300692552005189632/35981388401406a4b7dffd6f447a64c4.png?size=512",
+            ImageSize = 48,
+            Buttons = {
+                {
+                    Title = "Copy Invite",
+                    Icon = "",
+                    Callback = function()
+                        if setclipboard then
+                            setclipboard("https://discord.gg/" .. InviteCode)
+                            WindUI:Notify({
+                                Title = "Discord Invite",
+                                Content = "Copied to Clipboard!",
+                            })
+                        end
+                    end,
+                },
+            },
+        })
+    else
+        DiscordTab:Paragraph({
+            Title = "Failed to fetch Discord server info.",
+            TextSize = 20,
+            Justify = "Center",
+            Image = "",
+            Color = "Red",
+            Buttons = {
+                {
+                    Title = "Get Invite Link",
+                    Icon = "",
+                    Callback = function()
+                        if setclipboard then
+                            setclipboard("https://discord.gg/" .. InviteCode)
+                            WindUI:Notify({
+                                Title = "Discord Invite",
+                                Content = "Copied to Clipboard!",
+                            })
+                        else
+                            WindUI:Notify({
+                                Title = "Discord Invite",
+                                Content = "https://discord.gg/" .. InviteCode,
+                            })
+                        end
+                    end,
+                },
+            },
+        })
+    end
+end
+
+-- ==========================================
+-- ||            SETTINGS TAB              ||
+-- ==========================================
+do
+    SettingsTab:Section({
+        Title = "UI Settings",
+    })
+
+    SettingsTab:Toggle({
+        Title = "Hide Panel Background",
+        Value = false,
+        Callback = function(state)
+            Window:SetPanelBackground(not state)
+        end,
+    })
+
+    SettingsTab:Toggle({
+        Title = "Keybind Toggle (K)",
+        Value = false,
+        Callback = function(state)
+            if state then
+                Window:SetToggleKey(Enum.KeyCode.K)
+                WindUI:Notify({
+                    Title = "Keybind Set",
+                    Content = "Press K to toggle UI",
+                })
+            else
+                Window:SetToggleKey(nil)
+                WindUI:Notify({
+                    Title = "Keybind Removed",
+                    Content = "Keybind disabled",
+                })
+            end
+        end,
+    })
+
+    SettingsTab:Space({ Columns = 4 })
+
+    SettingsTab:Button({
+        Title = "Destroy UI",
+        Color = Color3.fromHex("#EF4F1D"),
+        Justify = "Center",
+        Icon = "",
+        Callback = function()
+            Window:Destroy()
+        end,
+    })
+end
+
+-- ==========================================
+-- ||            MAIN GAME LOOP            ||
+-- ==========================================
+
+table.insert(Connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    
+    if input.KeyCode == espKeybind or input.UserInputType == espKeybind then
+        espEnabled = not espEnabled
+        if espToggle then
+            espToggle:Set(espEnabled)
+        end
+        if not espEnabled then ClearESP() end
+    end
+end))
+
+table.insert(Connections, RunService.RenderStepped:Connect(function()
+    UpdateESP()
+    
+    if aimShowFOV then
+        local mousePos = UserInputService:GetMouseLocation()
+        fovCircle.Position = UDim2.fromOffset(mousePos.X, mousePos.Y)
+    end
+
+    local isHolding = false
+    if aimKeybind.EnumType == Enum.UserInputType then
+        isHolding = UserInputService:IsMouseButtonPressed(aimKeybind)
+    elseif aimKeybind.EnumType == Enum.KeyCode then
+        isHolding = UserInputService:IsKeyDown(aimKeybind)
+    end
+
+    if isHolding then
+        local targetPart, predictedPos = GetClosestEnemy()
+        if targetPart and predictedPos then
+            if aimMode == "Camera" then
+                AimCamera(predictedPos)
+            else
+                AimMouse(predictedPos)
+            end
+        end
+    end
+end))
+
+-- ==========================================
+-- ||        DESTRUCTION PIPELINE          ||
+-- ==========================================
+
+-- Add cleanup to Window destroy
+local originalDestroy = Window.Destroy
+Window.Destroy = function(self)
+    -- Cleanup connections
+    for _, connection in ipairs(Connections) do
+        if connection then
+            connection:Disconnect()
+        end
+    end
+    table.clear(Connections)
+    
+    -- Cleanup ESP
+    ClearESP()
+    if espFolder then espFolder:Destroy() end
+    
+    -- Cleanup FOV
+    if fovGui then fovGui:Destroy() end
+    
+    -- Reset states
+    espEnabled = false
+    
+    -- Call original destroy
+    originalDestroy(self)
+end
+
+WindUI:Notify({
+    Title = "NNVN Hub",
+    Content = "Loaded successfully!",
+    Duration = 3,
+})
+print(ProtectionConfig.HubName .. " Loaded Successfully!")
